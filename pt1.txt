@@ -1,0 +1,212 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <math.h>
+#include <time.h>
+#include <immintrin.h>
+#include <ammintrin.h>
+#include <stdint.h>
+#include <windows.h>
+
+#include "pgmfiles.h"
+#include "diff2d.h"
+
+
+
+//gcc -o fda pgmtolist.c pgmfiles.c diff2d.c main.c -lm
+
+
+DWORD WINAPI MinhaThread(LPVOID param) {
+    // Converter o argumento de LPVOID para o tipo de dados apropriado
+    int* thread_data = (int*)param;
+
+    // Obter os dados da matriz a partir do argumento
+    int* matriz = thread_data[0];
+    int tamanho_matriz = thread_data[1];
+    int inicio = thread_data[2];
+    int fim = thread_data[3];
+
+    // Processar a parte da matriz correspondente
+    for (int i = inicio; i < fim; i++) {
+        // Realizar o processamento necessário
+        matriz[i] *= 2;  // Exemplo simples: multiplicar todos os elementos por 2
+    }
+
+    return 0;
+}
+
+
+// Função para ler o contador de ciclos
+static inline uint64_t rdtsc() {
+    uint32_t lo, hi;
+    __asm__ volatile (
+        "rdtsc"
+        : "=a" (lo), "=d" (hi)
+    );
+    return ((uint64_t)hi << 32) | lo;
+}
+
+
+void main (int argc, char **argv) {
+  char   row[80];
+  float  **matrix;
+  int i, j;
+  FILE   *inimage, *outimage;
+  long   imax;
+  float  lambda;
+  int result;
+  eightBitPGMImage *PGMImage;
+  time_t begin, end, begin_total, end_total;
+  double time_spent_total, time_spent_in_arq, time_spent_out_arq, time_spent_diff2d;
+  uint64_t start_cycles, end_cycles, cycles_in_arq, cycles_out_arq, cycles_diff2d, cycle_begin, cycle_end;
+
+
+  /* ---- read image name  ---- */
+
+  begin_total = clock();
+  start_cycles = rdtsc();
+
+  PGMImage = (eightBitPGMImage *) malloc(sizeof(eightBitPGMImage));
+
+  if (!argv[1])
+  {
+    printf("name of input PGM image file (with extender): ");
+    scanf("%s", PGMImage->fileName);
+  }
+  else
+  {
+    strcpy(PGMImage->fileName, argv[1]);
+  }
+
+  begin = clock();
+  cycle_begin = rdtsc();
+
+  result = read8bitPGM(PGMImage);
+
+  if(result < 0)
+    {
+      printPGMFileError(result);
+      exit(result);
+    }
+
+  /* ---- allocate storage for matrix ---- */
+
+  matrix = (float **) malloc (PGMImage->x * sizeof(float *));
+  if (matrix == NULL)
+    {
+      printf("not enough storage available\n");
+      exit(1);
+    }
+  for (i=0; i<PGMImage->x; i++)
+    {
+      matrix[i] = (float *) malloc (PGMImage->y * sizeof(float));
+      if (matrix[i] == NULL)
+        {
+          printf("not enough storage available\n");
+          exit(1);
+        }
+    }
+
+  /* ---- read image data into matrix ---- */
+
+ for (i=0; i<PGMImage->x; i++)
+    for (j=0; j<PGMImage->y; j++)
+      matrix[i][j] = (float) *(PGMImage->imageData + (i*PGMImage->y) + j);
+
+  end = clock();
+  cycle_end = rdtsc();
+
+  time_spent_in_arq = ((double) (end - begin)) / CLOCKS_PER_SEC;
+  cycles_in_arq = cycle_end - cycle_begin;
+
+
+  /* ---- process image ---- */
+
+  printf("contrast paramter lambda (>0) : ");
+  //~ gets(row);  sscanf(row, "%f", &lambda);
+  scanf("%f", &lambda);
+  printf("number of iterations: ");
+  //~ gets(row);  sscanf(row, "%ld", &imax);
+  scanf("%ld", &imax);
+
+  begin = clock();
+  cycle_begin = rdtsc();
+
+  for (i=1; i<=imax; i++)
+    {
+      printf("iteration number: %3ld \n", i);
+      diff2d (0.5, lambda, PGMImage->x, PGMImage->y, matrix);
+    }
+
+  end = clock();
+  cycle_end = rdtsc();
+
+  time_spent_diff2d = ((double) (end - begin)) / CLOCKS_PER_SEC;
+  cycles_diff2d = cycle_end - cycle_begin;
+
+  /* copy the Result Image to PGM Image/File structure */
+
+  for (i=0; i<PGMImage->x; i++)
+    for (j=0; j<PGMImage->y; j++)
+      *(PGMImage->imageData + i*PGMImage->y + j) = (char) matrix[i][j];
+
+  /* ---- write image ---- */
+
+/*
+  if (!argv[2])
+  {
+    printf("name of output PGM image file (with extender): ");
+    scanf("%s", PGMImage->fileName);
+  }
+
+  else
+  {
+    strcpy(PGMImage->fileName, argv[2]);
+  }
+  */
+
+  printf("name of output PGM image file (with extender): ");
+  scanf("%s", PGMImage->fileName);
+
+  begin = clock();
+  cycle_begin = rdtsc();
+
+  write8bitPGM(PGMImage);
+
+  /* ---- disallocate storage ---- */
+
+  for (i=0; i<PGMImage->x; i++)
+    free(matrix[i]);
+  free(matrix);
+
+  free(PGMImage->imageData);
+  free(PGMImage);
+
+  end = clock();
+  cycle_end = rdtsc();
+
+  end_total = clock();
+  end_cycles = rdtsc();
+
+
+  time_spent_out_arq   = ((double) (end - begin)) / CLOCKS_PER_SEC;
+  cycles_out_arq = cycle_end - cycle_begin;
+  time_spent_total   = ((double) (end_total - begin_total)) / CLOCKS_PER_SEC;
+
+
+  printf("\nTempo de execucao usando bicliotecas proprias do windows:\n");
+  printf("\nTempo de CPU usado na abertura do arquivo: %lf segundos", time_spent_in_arq);
+  printf("\nTempo de CPU usado na execucao do FDA: %lf segundos", time_spent_diff2d);
+  printf("\nTempo de CPU usado no fechamento do arquivo: %lf segundos", time_spent_out_arq);
+  printf("\nTempo de CPU usado no total da execucao: %lf segundos", time_spent_total);
+
+
+  printf("\n\nTempo de execucao usando contagem de ciclos:\n");
+  printf("\nNumero de ciclos de CPU na abertura do arquivo: %llu\n", cycles_in_arq);
+  printf("\nNumero de ciclos de CPU na execucao do FDA: %llu\n", cycles_diff2d);
+  printf("\nNumero de ciclos de CPU no fechamento do arquivo: %llu\n", cycles_out_arq);
+  printf("\nNumero de ciclos de CPU no total: %llu\n", end_cycles - start_cycles);
+
+
+
+}
